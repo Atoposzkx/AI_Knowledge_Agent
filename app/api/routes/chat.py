@@ -8,8 +8,9 @@ Prompt 拼装、知识检索和 LLM 调用都不应该写在这个文件中。
 '''
 
 '''
-from fastapi import APIRouter
+from fastapi import APIRouter,HTTPException
 from app.clients.llm_client import LLMClient
+from app.core.exceptions import LLMTimeoutError
 from app.services.chat_service import ChatService
 
 from app.schemas.chat import ChatRequest, ChatResponse
@@ -36,6 +37,12 @@ async def create_chat(request: ChatRequest) -> ChatResponse:
     接收用户消息，调用 ChatService，并返回符合 ChatResponse 的结果。"""
     
     '''调用聊天服务，并包装响应'''
-    answer = await chat_service.generate_answer(request.message)
+    try:
+        answer = await chat_service.generate_answer(request.message)
+    except LLMTimeoutError as exc:
+        raise HTTPException(
+            status_code=504,
+            detail="等待模型回答超时，请稍后再试",
+        ) from exc
 
     return ChatResponse(answer=answer)
