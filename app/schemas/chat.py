@@ -19,10 +19,13 @@ class ChatRequest(BaseModel):
     def strip_message(cls,value:object)->object:
         '''校验长度前，删除消息首尾的空白字符。'''
         if isinstance(value,str):
-            return value.steip()
+            return value.strip()
         return value
 
 class ChatResponse(BaseModel):
     """POST /chat 成功时返回的 JSON 数据。"""
 
-    answer: str
+    answer: str = Field(
+        min_length=1,
+        description="模型生成的回答"
+    )

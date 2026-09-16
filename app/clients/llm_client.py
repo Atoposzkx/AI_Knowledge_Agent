@@ -17,4 +17,4 @@ class LLMClient:
         3. 处理超时、认证失败和限流；
         4. 从厂商响应中提取最终文本。
         """
-        raise NotImplementedError
+        return "这是LLM Client返回的测试结果"

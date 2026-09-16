@@ -15,9 +15,11 @@ class ChatService:
     async def generate_answer(self, message: str) -> str:
         """根据用户消息生成答案。
 
-        TODO（后续由你实现）：
-        1. 根据业务需求组织 messages；
-        2. 调用 self.llm_client.generate(...)；
-        3. 返回清理后的模型答案。
+         
         """
-        raise NotImplementedError
+        messages = [
+        {"role": "user", "content": message}
+        ]
+
+        answer = await self.llm_client.generate(messages)
+        return answer
