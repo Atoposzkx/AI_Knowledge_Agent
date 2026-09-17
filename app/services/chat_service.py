@@ -13,10 +13,7 @@ class ChatService:
         self.llm_client = llm_client
 
     async def generate_answer(self, message: str) -> str:
-        """根据用户消息生成答案。
-
-         
-        """
+        """根据用户消息生成答案。"""
         messages = [
         {"role": "user", "content": message}
         ]

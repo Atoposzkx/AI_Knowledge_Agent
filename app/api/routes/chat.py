@@ -14,6 +14,9 @@ from app.core.exceptions import LLMTimeoutError
 from app.services.chat_service import ChatService
 
 from app.schemas.chat import ChatRequest, ChatResponse
+
+from typing import Annotated
+from fastapi import APIRouter,Depends,HTTPException
 '''
 FastAPI    整家公司
 APIRouter  一个部门
@@ -24,9 +27,17 @@ FastAPI 用于创建整个应用的主实例，而 APIRouter 用于创建子路�
 router = APIRouter(prefix="/chat", tags=["chat"])
 
 chat_service = ChatService(llm_client=LLMClient())
+
+def get_chat_service()->ChatService:
+    '''向路由提供聊天服务对象'''
+    return chat_service
+
 #注册时的前缀 + Router 前缀 + 接口路径
 @router.post("", response_model=ChatResponse)
-async def create_chat(request: ChatRequest) -> ChatResponse:
+async def create_chat(
+    request: ChatRequest,
+    #Annotated 用来把“类型”和“额外说明”放在一起。这里的额外说明就是 Depends(...)。这是 FastAPI 官方推荐的依赖声明写法。
+    service:Annotated[ChatService,Depends(get_chat_service)]) -> ChatResponse:
     """接收一条用户消息并返回模型回答。
 
     TODO：
@@ -38,7 +49,7 @@ async def create_chat(request: ChatRequest) -> ChatResponse:
     
     '''调用聊天服务，并包装响应'''
     try:
-        answer = await chat_service.generate_answer(request.message)
+        answer = await service.generate_answer(request.message)
     except LLMTimeoutError as exc:
         raise HTTPException(
             status_code=504,
