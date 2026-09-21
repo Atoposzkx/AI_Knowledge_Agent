@@ -16,7 +16,8 @@ from app.services.chat_service import ChatService
 from app.schemas.chat import ChatRequest, ChatResponse
 
 from typing import Annotated
-from fastapi import APIRouter,Depends,HTTPException
+from fastapi import APIRouter,Depends,HTTPException,Request
+
 '''
 FastAPI    整家公司
 APIRouter  一个部门
@@ -26,17 +27,47 @@ FastAPI 用于创建整个应用的主实例，而 APIRouter 用于创建子路�
 
 router = APIRouter(prefix="/chat", tags=["chat"])
 
-chat_service = ChatService(llm_client=LLMClient())
 
-def get_chat_service()->ChatService:
-    '''向路由提供聊天服务对象'''
-    return chat_service
+
+def get_chat_service(request:Request)->ChatService:
+    '''向路由提供聊天服务对象,取得应用启动时创建的聊天服务'''
+    '''
+    Request 是 FastAPI 提供的 HTTP 请求对象，能通过 request.app 找到处理请求的应用。
+    ChatRequest 是你定义的 JSON 数据模型，里面有用户发送的 message
+    FastAPI 会为这个依赖函数提供 Request，不需要用户额外传参。
+
+    完整过程：
+FastAPI startup
+↓
+lifespan
+↓
+ChatService 创建
+↓
+app.state.chat_service = ...
+
+================
+
+POST /chat
+↓
+Depends(get_chat_service)
+↓
+FastAPI 调 get_chat_service(request)
+↓
+request.app.state.chat_service
+↓
+拿到之前创建的 ChatService
+↓
+注入 Router
+    '''
+    return request.app.state.chat_service
 
 #注册时的前缀 + Router 前缀 + 接口路径
 @router.post("", response_model=ChatResponse)
 async def create_chat(
     request: ChatRequest,
     #Annotated 用来把“类型”和“额外说明”放在一起。这里的额外说明就是 Depends(...)。这是 FastAPI 官方推荐的依赖声明写法。
+    #create_chat() 需要一个 ChatService；这个对象不要从 HTTP 请求里拿，也不要让我自己创建，而是让 FastAPI 调用 get_chat_service() 帮我取得。
+    #Router 声明：“我需要一个 ChatService”；FastAPI 根据 Depends(get_chat_service) 找到获取方法，执行它，然后把结果注入 service 参数。
     service:Annotated[ChatService,Depends(get_chat_service)]) -> ChatResponse:
     """接收一条用户消息并返回模型回答。
 

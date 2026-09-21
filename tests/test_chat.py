@@ -7,14 +7,28 @@ TODO（实现 /chat 时逐步补充）：
 - LLM 超时或失败时返回约定的错误。
 """
 
+#这个文件综述：Router 测 HTTP；Service 测业务逻辑；Client 测外部 API 封装。我们测试了三个层面。
 
+#测试哪一层，就保留这一层真实，把它下面的依赖替换掉。
+'''
+对应 Mock：
 
+Router Test
+→ dependency_overrides
+
+Service Test
+→ Fake LLMClient / monkeypatch
+
+Client Test
+→ Mock SDK / HTTP 层
+'''
 '''聊天接口测试'''
 
 from fastapi.testclient import TestClient
 from app.main import app
-from app.api.routes.chat import chat_service
+from app.api.routes.chat import get_chat_service
 from app.core.exceptions import LLMTimeoutError
+
 
 '''测试时临时替换真实的模型调用'''
 async def fake_genenerate(messages):
@@ -43,12 +57,29 @@ def test_chat_sucess(monkeypatch):
     assert response.status_code == 200
     assert response.json() == {"answer":"这是测试答案"}
 
+
+#--------------------------------------
+
+#单独测试LLMClient
+'''
+在lim_client.py中，我们有APITimeoutError,但是在这个版本中我们
+
+| 测试         |        保留真实代码       |    替换部分 |
+
+| 之前的聊天测试 | Router、Service | `LLMClient.generate()` |
+| 下一步的 Client 测试 | `LLMClient.generate()` | SDK 的 `responses.create()` |
+
+让假的 SDK 调用抛出 APITimeoutError，再检查真实 Client 是否抛出 LLMTimeoutError。这样无需访问 DeepSeek，也能验证异常转换。
+这个我们将新建文件test_llm_client.py,专门测试客户端
+'''
+
+
 async def fake_generate_timeout(messages):
-    '''模拟模型调用超时'''
+    #模拟模型调用超时
     raise LLMTimeoutError("测试：模型超时")
 
-
 def test_chat_timeout(monkeypatch):
+
     monkeypatch.setattr(
         chat_service.llm_client,
         "generate",
@@ -70,7 +101,8 @@ def test_chat_timeout(monkeypatch):
 async def fake_generate_empty(messages):
     raise AssertionError("无效输入不应该调用此模型")
 def test_chat_request(monkeypatch):
-    #额外检查一件事：被拒绝的输入，不应该继续调用模型。
+    #其实下面不写假函数也可以，额外检查一件事：被拒绝的输入，不应该继续调用模型。
+    
     monkeypatch.setattr(
         chat_service.llm_client,
         #模型客户端上的方法名字
@@ -95,7 +127,7 @@ def test_chat_full(monkeypatch):
         #模型客户端上的方法名字
         "generate",
         #
-        fake_generate_empty,
+        fake_generate_null,
     )
 
     with TestClient(app) as client:
@@ -104,6 +136,87 @@ def test_chat_full(monkeypatch):
             json={},
         )
     assert response.status_code == 422
+
+
+#------------------------------------------------------
+
+#Router层面测试
+class FakeChatService:
+    '''测试用聊天服务，不调用真实模型'''
+    async def generate_answer(self,message:str)->str:
+        return "这是依赖替换的测试答案"
+def get_fake_chat_service():
+    return FakeChatService()
+def test_chat_dependency_override(monkeypatch):
+    #告诉FastAPI:用假服务提供函数替代原来的提供函数
+    #setitem 用来修改字典的键值。（与setattr的区别，那个是临时替换对象/类的属性）
+    #app.dependency_overrides。它是 FastAPI 提供的一个字典，用来记录：原本要调用哪个依赖函数，现在改用哪个函数。
+    #setitem相当于app.dependency_overrides[get_chat_service] = get_fake_chat_service
+    #在这次测试期间，告诉 FastAPI：原本凡是要执行 get_chat_service 的地方，都不要执行它，改成执行 get_fake_chat_service
+    '''
+真实的流程
+POST /chat
+↓
+FastAPI
+↓
+发现 Depends(get_chat_service)
+↓
+检查 dependency_overrides
+↓
+发现：
+
+get_chat_service
+→ get_fake_chat_service
+
+↓
+调用 get_fake_chat_service()
+↓
+得到 FakeChatService
+↓
+注入 Router 的 service 参数
+
+使用参数之间的联系
+app.dependency_overrides
+→ 我要修改哪个字典
+
+get_chat_service
+→ key，原来的依赖
+
+get_fake_chat_service
+→ value，用什么替代
+
+app.dependency_overrides = {
+    get_chat_service: get_fake_chat_service
+}
+    '''
+    monkeypatch.setitem(
+        app.dependency_overrides,
+        get_chat_service,
+        get_fake_chat_service,
+    )
+    '''
+    FastAPI 的 dependency_overrides：决定使用哪个依赖函数。
+    pytest 的 monkeypatch.setitem()：临时添加这条字典记录，并在测试结束后自动恢复，避免影响其他测试。所以不用上面那个app.dependency_overrides[
+    get_chat_service
+] = get_fake_chat_service 这个之后还必须手动清理
+    '''
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/chat",
+            json={"message":"你好"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "answer":"这是依赖替换的测试答案"
+    }
+
+
+
+
+
+
 
 
 '''

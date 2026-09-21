@@ -20,6 +20,11 @@ class LLMClient:
             max_retries=0,
         )
 
+    async def close(self) -> None:
+        '''关闭底层SDK客户端，释放网络资源'''
+        await self.client.close()
+
+
     async def generate(self, messages: list[dict[str, str]]) -> str:
         # Responses API 的 input 可以接收 Service 组织好的消息列表。
         '''
@@ -59,7 +64,7 @@ HTTP 转换
             )
             #Exception Chaining，异常链。from exc 是明确说明“新异常由原异常引起”
         except APITimeoutError as exc:
-            raise LLMTimeoutError("等待模型回答超时，请稍后重试") from exc
+            raise LLMTimeoutError("等待模型回答超时，请稍后重试" )from exc
 
         # output 包含不同类型的输出项；output_text 快捷提取其中的文本。
         answer = response.output_text
