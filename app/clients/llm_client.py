@@ -3,10 +3,17 @@
 这个模块负责隐藏具体厂商 SDK 的调用方式，让 Service 不必知道底层使用
 OpenAI、其他云模型还是本地模型。
 """
-from openai import AsyncOpenAI,APITimeoutError
+import logging
+from time import perf_counter
+
+from openai import AsyncOpenAI, APIConnectionError, APIStatusError, APITimeoutError
 
 from app.core.config import settings
-from app.core.exceptions import LLMTimeoutError
+from app.core.exceptions import (
+    LLMConnectionError, LLMProviderError, LLMTimeoutError, LLMResponseError,
+)
+
+logger = logging.getLogger(__name__)
 
 class LLMClient:
     """调用大语言模型的统一入口。"""
@@ -15,9 +22,9 @@ class LLMClient:
             api_key=settings.llm_api_key.get_secret_value(),
             base_url=settings.llm_base_url,
             #单位为秒，用于限制网络操作的等待时间
-            timeout=60.0,
+            timeout=settings.llm_timeout_seconds,
             #表示失败后不自动尝试
-            max_retries=0,
+            max_retries=settings.llm_max_retries,
         )
 
     async def close(self) -> None:
@@ -57,6 +64,7 @@ SDK 异常
 HTTP 转换
 → Web Layer 处理
         '''
+        started = perf_counter()
         try:
             response = await self.client.responses.create(
                 model=settings.llm_model,
@@ -64,14 +72,25 @@ HTTP 转换
             )
             #Exception Chaining，异常链。from exc 是明确说明“新异常由原异常引起”
         except APITimeoutError as exc:
-            raise LLMTimeoutError("等待模型回答超时，请稍后重试" )from exc
+            # APITimeoutError 是 APIConnectionError 的子类，必须先捕获。
+            logger.warning("llm_timeout elapsed_ms=%.0f", (perf_counter() - started) * 1000)
+            raise LLMTimeoutError("等待模型回答超时，请稍后重试") from exc
+        except APIConnectionError as exc:
+            logger.warning("llm_connection_error elapsed_ms=%.0f", (perf_counter() - started) * 1000)
+            raise LLMConnectionError("无法连接模型服务") from exc
+        except APIStatusError as exc:
+            # 不输出 str(exc) 或异常原文，避免把上游响应和请求内容写进日志。
+            logger.warning("llm_provider_error status=%s elapsed_ms=%.0f", exc.status_code, (perf_counter() - started) * 1000)
+            raise LLMProviderError("模型服务请求失败") from exc
 
         # output 包含不同类型的输出项；output_text 快捷提取其中的文本。
         answer = response.output_text
-        if not answer:
-            raise ValueError("模型没有返回文本答案")
+        if not isinstance(answer, str) or not answer.strip():
+            logger.warning("llm_empty_answer")
+            raise LLMResponseError("模型没有返回文本答案")
 
-        return answer
+        logger.info("llm_success elapsed_ms=%.0f", (perf_counter() - started) * 1000)
+        return answer.strip()
         
 '''
 OpenAI Python SDK 是一个客户端库，它帮我们构造 HTTP Request、发送请求、携带认证信息，并把 API 返回的数据解析成 Python 对象。以下是流程

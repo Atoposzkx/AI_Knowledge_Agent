@@ -5,7 +5,7 @@ import pytest
 from openai import APITimeoutError
 
 from app.clients.llm_client import LLMClient
-from app.core.exceptions import LLMTimeoutError
+from app.core.exceptions import LLMTimeoutError,LLMResponseError
 #SimpleNamespace 可以创建一个通过点号访问属性的简单对象
 '''
 举例
@@ -113,7 +113,7 @@ def test_llm_empty_answer(monkeypatch):
     async def run_check():
         try:
             # 同时检查异常类型和错误说明。
-            with pytest.raises(ValueError, match="模型没有返回文本答案"):
+            with pytest.raises(LLMResponseError, match="模型没有返回文本答案"):
                 await llm_client.generate(messages)
         finally:
             await llm_client.client.close()

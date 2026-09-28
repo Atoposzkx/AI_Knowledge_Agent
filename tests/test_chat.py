@@ -11,6 +11,18 @@ TODO（实现 /chat 时逐步补充）：
 
 #测试哪一层，就保留这一层真实，把它下面的依赖替换掉。
 '''
+Router Test
+→ 保留真实 Router
+→ Fake ChatService
+
+Service Test
+→ 保留真实 ChatService
+→ Fake LLMClient
+
+LLMClient Test
+→ 保留真实 LLMClient
+→ Fake SDK / responses.create
+
 对应 Mock：
 
 Router Test
@@ -27,7 +39,7 @@ Client Test
 from fastapi.testclient import TestClient
 from app.main import app
 from app.api.routes.chat import get_chat_service
-from app.core.exceptions import LLMTimeoutError
+from app.core.exceptions import LLMTimeoutError,LLMResponseError
 
 
 '''测试时临时替换真实的模型调用'''
@@ -35,6 +47,9 @@ async def fake_genenerate(messages):
     '''代替真实的LLM,返回固定的答案'''
     return "这是测试答案"
 
+# 旧版学习记录：使用模块级 chat_service，在启动 TestClient 前替换方法。
+# 下面用多行字符串保留旧代码，不会被 pytest 收集或执行。
+"""
 def test_chat_sucess(monkeypatch):
     #临时替换当前LLM客户端的generate方法
     #。可以使用 monkeypatch.setattr 来将函数或属性替换为符合测试需求的版本
@@ -56,6 +71,37 @@ def test_chat_sucess(monkeypatch):
 
     assert response.status_code == 200
     assert response.json() == {"answer":"这是测试答案"}
+"""
+
+
+def test_chat_sucess(monkeypatch):
+    """验证正常聊天，并记录生命周期改造前后的测试顺序。
+
+    旧版：导入 chat.py 时就创建全局 chat_service，因此可以先替换
+    generate，再进入 TestClient。
+
+    新版：导入 app 只是注册 lifespan；进入 with TestClient(app) 时，
+    才执行 lifespan 中 yield 前的代码，创建客户端和 Service。
+    因此必须先启动应用，再取服务、替换方法，最后发送请求。
+    启动时创建这些对象不会调用模型；实际调用发生在处理聊天请求时。
+    """
+    # 1. 进入上下文：触发应用启动，等待 lifespan 完成资源准备。
+    with TestClient(app) as client:
+        # 2. 取得本次启动创建的对象，不是复制或新建 Service。
+        # get_chat_service() 给路由提供的也是 app.state 中的同一个对象。
+        chat_service = app.state.chat_service
+        # 3. 在发请求之前替换 generate；此时只是替换，还未执行假函数。
+        monkeypatch.setattr(
+            chat_service.llm_client, "generate", fake_genenerate
+        )
+        # 4. 请求经过真实 Router、Service，调用替换后的假模型方法。
+        response = client.post("/chat", json={"message": "你好"})
+    # 5. 退出 with：lifespan 的 finally 关闭客户端；已取得的响应仍可检查。
+    # 下次进入 TestClient 会重新创建客户端，不复用本次已关闭的对象。
+    assert response.status_code == 200
+    assert response.json() == {"answer": "这是测试答案"}
+    # 测试结束后，pytest 的 monkeypatch 撤销方法替换。
+    # 方法恢复由 monkeypatch 负责，客户端关闭由 lifespan 负责。
 
 
 #--------------------------------------
@@ -78,6 +124,8 @@ async def fake_generate_timeout(messages):
     #模拟模型调用超时
     raise LLMTimeoutError("测试：模型超时")
 
+# 旧版学习记录：假函数抛出 LLMTimeoutError，Router 将它转换为 504。
+"""
 def test_chat_timeout(monkeypatch):
 
     monkeypatch.setattr(
@@ -96,10 +144,25 @@ def test_chat_timeout(monkeypatch):
     assert response.json() == {
         "detail":"等待模型回答超时，请稍后再试"
     }
+"""
+
+
+def test_chat_timeout(monkeypatch):
+    # 新版：先启动应用、取出服务，再替换模型方法。
+    with TestClient(app) as client:
+        chat_service = app.state.chat_service
+        monkeypatch.setattr(
+            chat_service.llm_client, "generate", fake_generate_timeout
+        )
+        response = client.post("/chat", json={"message": "你好"})
+    assert response.status_code == 504
+    assert response.json() == {"detail": "等待模型回答超时，请稍后再试"}
 
 
 async def fake_generate_empty(messages):
     raise AssertionError("无效输入不应该调用此模型")
+# 旧版学习记录：空白输入应返回 422，且不应调用模型。
+"""
 def test_chat_request(monkeypatch):
     #其实下面不写假函数也可以，额外检查一件事：被拒绝的输入，不应该继续调用模型。
     
@@ -117,9 +180,23 @@ def test_chat_request(monkeypatch):
             json={"message":"  "},
         )
     assert response.status_code == 422
+"""
+
+
+def test_chat_request(monkeypatch):
+    with TestClient(app) as client:
+        chat_service = app.state.chat_service
+        # 保留“误调用就报错”的替身，验证输入被拒绝后不会调用模型。
+        monkeypatch.setattr(
+            chat_service.llm_client, "generate", fake_generate_empty
+        )
+        response = client.post("/chat", json={"message": "  "})
+    assert response.status_code == 422
 
 async def fake_generate_null(messages):
     raise AssertionError("无效输入不应该调用此模型")
+# 旧版学习记录：缺少必填字段 message，也应在调用模型前被拒绝。
+"""
 def test_chat_full(monkeypatch):
     #额外检查一件事：被拒绝的输入，不应该继续调用模型。
     monkeypatch.setattr(
@@ -136,11 +213,22 @@ def test_chat_full(monkeypatch):
             json={},
         )
     assert response.status_code == 422
+"""
+
+
+def test_chat_full(monkeypatch):
+    with TestClient(app) as client:
+        chat_service = app.state.chat_service
+        monkeypatch.setattr(
+            chat_service.llm_client, "generate", fake_generate_null
+        )
+        response = client.post("/chat", json={})
+    assert response.status_code == 422
 
 
 #------------------------------------------------------
 
-#Router层面测试
+#Router层面测试，Client 负责识别并报告问题，Router 负责把问题表达成 HTTP 响应。
 class FakeChatService:
     '''测试用聊天服务，不调用真实模型'''
     async def generate_answer(self,message:str)->str:
@@ -188,6 +276,9 @@ get_fake_chat_service
 app.dependency_overrides = {
     get_chat_service: get_fake_chat_service
 }
+
+为什么这个不用app.state.chat_service
+原因是：app.state.chat_service 是在应用启动时创建的单例对象，而依赖注入机制允许我们在测试期间临时替换依赖函数，从而控制注入到路由中的服务实例。使用 dependency_overrides 可以在不修改全局状态的情况下替换依赖，保证测试的隔离性和可控性。
     '''
     monkeypatch.setitem(
         app.dependency_overrides,
@@ -214,8 +305,21 @@ app.dependency_overrides = {
 
 
 
+async def fake_generate_invalid_response(messages):
+    '''模拟Client报告模型响应不可用'''
+    raise LLMResponseError("模型没有返回文本答案")
 
-
+def test_chat_invalid_response(monkeypatch):
+    with TestClient(app) as client:
+        chat_service = app.state.chat_service
+        monkeypatch.setattr(
+            chat_service.llm_client, "generate", fake_generate_invalid_response
+        )
+        response = client.post("/chat", json={"message":"你好"})
+    assert response.status_code == 502
+    assert response.json() == {
+        "detail": "模型返回了不可用的响应，请稍后再试"
+    }
 
 
 

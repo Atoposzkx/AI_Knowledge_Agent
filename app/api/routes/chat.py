@@ -8,15 +8,16 @@ Prompt 拼装、知识检索和 LLM 调用都不应该写在这个文件中。
 '''
 
 '''
-from fastapi import APIRouter,HTTPException
-from app.clients.llm_client import LLMClient
-from app.core.exceptions import LLMTimeoutError
+from app.core.exceptions import (
+    LLMConnectionError, LLMProviderError, LLMResponseError, LLMTimeoutError,
+)
+
 from app.services.chat_service import ChatService
 
 from app.schemas.chat import ChatRequest, ChatResponse
 
 from typing import Annotated
-from fastapi import APIRouter,Depends,HTTPException,Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 '''
 FastAPI    整家公司
@@ -62,7 +63,14 @@ request.app.state.chat_service
     return request.app.state.chat_service
 
 #注册时的前缀 + Router 前缀 + 接口路径
-@router.post("", response_model=ChatResponse)
+@router.post(
+    "", response_model=ChatResponse,
+    responses={
+        502: {"description": "模型响应不可用或上游返回错误"},
+        503: {"description": "无法连接模型服务"},
+        504: {"description": "等待模型超时"},
+    },
+)
 async def create_chat(
     request: ChatRequest,
     #Annotated 用来把“类型”和“额外说明”放在一起。这里的额外说明就是 Depends(...)。这是 FastAPI 官方推荐的依赖声明写法。
@@ -71,7 +79,7 @@ async def create_chat(
     service:Annotated[ChatService,Depends(get_chat_service)]) -> ChatResponse:
     """接收一条用户消息并返回模型回答。
 
-    TODO：
+    处理步骤（已实现）：
     1. 获取 ChatService；
     2. 把 request.message 交给 Service；
     3. 将 Service 返回的答案包装为 ChatResponse。
@@ -85,6 +93,22 @@ async def create_chat(
         raise HTTPException(
             status_code=504,
             detail="等待模型回答超时，请稍后再试",
+        ) from exc
+    except LLMResponseError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail="模型返回了不可用的响应，请稍后再试",
+        ) from exc
+    except LLMConnectionError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="暂时无法连接模型服务，请稍后再试",
+        ) from exc
+    except LLMProviderError as exc:
+        # 上游的 401 并不代表本接口用户未登录，不直接照搬上游状态码。
+        raise HTTPException(
+            status_code=502,
+            detail="模型服务请求失败，请稍后再试",
         ) from exc
 
     return ChatResponse(answer=answer)

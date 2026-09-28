@@ -38,8 +38,12 @@ from app.api.routes.chat import router as chat_router
 from app.api.routes.health import router as health_router
 
 from contextlib import asynccontextmanager
+import logging
 from app.clients.llm_client import LLMClient
 from app.services.chat_service import ChatService
+from app.core.logging import configure_logging
+
+logger = logging.getLogger(__name__)
 
 '''
 启动 Uvicorn
@@ -66,21 +70,40 @@ FastAPI 开始工作
 关闭各种资源
 ↓
 程序退出
-'''
-async def lifespan(app:FastAPI):
 
-   llm_client = LLMClient()
+
+应用启动
+↓
+LLMClient 创建一次
+
+请求 1 ─┐
+请求 2 ─┼→ 复用 LLMClient
+请求 3 ─┘
+
+应用关闭
+↓
+统一 close
+'''
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+
+    configure_logging()
+    llm_client = LLMClient()
    #lifespan 可以理解为：定义应用启动之前做什么，以及应用关闭时做什么。客户端要在应用运行期间持续复用，等整个应用关闭时再关闭。
    
    #app.state 是应用提供的一个存放共享对象的位置。这里把 ChatService 存进去，之后 get_chat_service() 就从这个位置取出服务，交给 Route
-   try:
+    try:
         #启动时创建服务，保存在当前应用上
         #app.state.chat_service	保存应用运行期间使用的 Service。get_chat_service()	取出 Service，供 Depends 注入
         app.state.chat_service = ChatService(llm_client=llm_client)
+        logger.info("application_started")
         yield
-   finally:
+    finally:
        #应用关闭时，清理本次启动创建客户端
-      await llm_client.close()
+        await llm_client.close()
+        del app.state.chat_service
+        logger.info("application_stopped")
+
 
 app = FastAPI(
     title="AI Knowledge Agent",
