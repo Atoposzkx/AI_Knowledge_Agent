@@ -1,11 +1,19 @@
+'''
+这三个测试都在检查同一个方法：真实的 LLMClient.generate()。区别只是：假 SDK 分别制造三种情况，看看 generate() 是否处理正确。
+测试	                  假 SDK 做什么	         真实 generate() 应该怎么处理
+test_llm_timeout	    抛出 APITimeoutError	 转成 LLMTimeoutError
+test_llm_success	    返回包含正常答案的对象	     提取答案并返回字符串
+test_llm_empty_answer	返回包含空答案的对象	    抛出 LLMResponseError
+'''
+
 import asyncio
 
 import httpx
 import pytest
-from openai import APITimeoutError
+from openai import APITimeoutError,APIConnectionError,APIStatusError
 
 from app.clients.llm_client import LLMClient
-from app.core.exceptions import LLMTimeoutError,LLMResponseError
+from app.core.exceptions import LLMTimeoutError,LLMResponseError,LLMConnectionError,LLMProviderError
 #SimpleNamespace 可以创建一个通过点号访问属性的简单对象
 '''
 举例
@@ -15,7 +23,7 @@ print(response.output_text)  # 你好
 from types import SimpleNamespace
 
 #APITimeoutError 怎么人为创建？它是 OpenAI SDK 的异常。
-#
+
 async def fake_create(model,input):
     '''模拟SDK请求超时，不发送网络请求'''
     #httpx.Request(...）只是创建了一个 Python Request 对象，方便构造 SDK 异常。
@@ -96,13 +104,14 @@ def test_llm_success(monkeypatch):
     asyncio.run(run_check())
 
 
-def test_llm_empty_answer(monkeypatch):
+@pytest.mark.parametrize("output_text", ["", "   ", "\n\t "])
+def test_llm_empty_answer(monkeypatch, output_text):
     """模型返回空文本时，Client 应拒绝这个答案。"""
     llm_client = LLMClient()
     messages = [{"role": "user", "content": "你好"}]
 
     async def fake_create_empty(model, input):
-        return SimpleNamespace(output_text="")
+        return SimpleNamespace(output_text=output_text)
 
     monkeypatch.setattr(
         llm_client.client.responses,
@@ -114,6 +123,88 @@ def test_llm_empty_answer(monkeypatch):
         try:
             # 同时检查异常类型和错误说明。
             with pytest.raises(LLMResponseError, match="模型没有返回文本答案"):
+                await llm_client.generate(messages)
+        finally:
+            await llm_client.client.close()
+
+    asyncio.run(run_check())
+
+def test_llm_connection_error(monkeypatch):
+    llm_client = LLMClient()
+    messages = [{"role": "user", "content": "你好"}]
+
+    async def fake_create_connection_error(model, input):
+        request = httpx.Request(
+            "Post",
+            "https://example.invalid/responses"
+        )
+        raise APIConnectionError(request=request)
+
+    monkeypatch.setattr(
+        llm_client.client.responses,
+        "create",
+        fake_create_connection_error,
+    )
+
+            #from exc 表示：这个新的异常，是由原来的异常引起的。 Python 会把原始异常保存在新异常的 __cause__ 属性中
+    async def run_check():
+        try:
+            '''
+            这段要求代码块满足两个条件：
+- 抛出的异常是 LLMConnectionError。
+- 异常说明匹配 "无法连接模型服务"。match 使用正则匹配，这里可以先按文本匹配理解。
+'''
+            with pytest.raises(
+                LLMConnectionError,
+                match="无法连接模型服务",
+            ) as exc_info:
+                await llm_client.generate(messages)
+            #exc_info 是 pytest 提供的异常信息对象。exc_info.value取得刚才抛出的 LLMConnectionError 异常对象。
+            '''
+            exc_info                 # pytest 保存的异常信息
+exc_info.value           # 最终的 LLMConnectionError
+exc_info.value.__cause__ # 导致它发生的 APIConnectionError
+            '''
+            assert isinstance(
+                exc_info.value.__cause__,
+                APIConnectionError,
+            )
+        finally:
+            await llm_client.client.close()
+
+    asyncio.run(run_check())
+
+def test_llm_provider_error(monkeypatch):
+    llm_client = LLMClient()
+    messages = [{"role": "user", "content": "你好"}]
+
+    async def fake_create_provider_error(model, input):
+        request = httpx.Request(
+            "POST",
+            "https://example.invalid/responses",
+        )
+
+        response = httpx.Response(
+            status_code=500,
+            request=request,
+        )
+
+        raise APIStatusError(
+            "模拟上游服务错误",
+            response=response,
+            body=None,
+        )
+
+    # 保留真实 generate，让它调用这个会抛出上游错误的假 SDK 方法。
+    monkeypatch.setattr(
+        llm_client.client.responses,
+        "create",
+        fake_create_provider_error,
+    )
+
+    async def run_check():
+        try:
+            with pytest.raises(LLMProviderError, match="模型服务请求失败"):
                 await llm_client.generate(messages)
         finally:
             await llm_client.client.close()

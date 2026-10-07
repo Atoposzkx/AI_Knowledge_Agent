@@ -112,3 +112,30 @@ async def create_chat(
         ) from exc
 
     return ChatResponse(answer=answer)
+
+'''
+我们在这里详细讲述depends的工作原理。
+
+第一点：get_chat_service 定义了“怎样取得服务”。
+第二点：Depends(get_chat_service) 告诉 FastAPI：“处理这个请求时，请执行这个函数，把结果放到 service 参数里。”
+第三点：service: Annotated[ChatService, Depends(get_chat_service)]
+这行可以分成三个部分：
+service       # 参数名字
+
+ChatService   # 我期望得到什么类型的对象
+
+Depends(get_chat_service)  # 请调用哪个函数来取得它
+收到请求后，FastAPI 的工作可以近似理解为：
+# 1. 解析并验证请求 JSON
+chat_request = ChatRequest(message="你好")
+
+# 2. 执行依赖函数，取得服务
+service = get_chat_service(http_request)
+
+# 3. 把准备好的参数传给路由
+response = await create_chat(
+    request=chat_request,
+    service=service,
+)
+这段是解释执行过程的示意代码。真实的解析、调用与传参由 FastAPI 完成。
+'''

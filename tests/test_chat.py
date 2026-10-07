@@ -39,7 +39,9 @@ Client Test
 from fastapi.testclient import TestClient
 from app.main import app
 from app.api.routes.chat import get_chat_service
-from app.core.exceptions import LLMTimeoutError,LLMResponseError
+from app.core.exceptions import (
+    LLMTimeoutError, LLMResponseError, LLMConnectionError, LLMProviderError,
+)
 
 
 '''测试时临时替换真实的模型调用'''
@@ -86,7 +88,7 @@ def test_chat_sucess(monkeypatch):
     启动时创建这些对象不会调用模型；实际调用发生在处理聊天请求时。
     """
     # 1. 进入上下文：触发应用启动，等待 lifespan 完成资源准备。
-    with TestClient(app) as client:
+    with TestClient(app) as client: #这里的client可以理解为测试客户端
         # 2. 取得本次启动创建的对象，不是复制或新建 Service。
         # get_chat_service() 给路由提供的也是 app.state 中的同一个对象。
         chat_service = app.state.chat_service
@@ -240,7 +242,7 @@ def test_chat_dependency_override(monkeypatch):
     #setitem 用来修改字典的键值。（与setattr的区别，那个是临时替换对象/类的属性）
     #app.dependency_overrides。它是 FastAPI 提供的一个字典，用来记录：原本要调用哪个依赖函数，现在改用哪个函数。
     #setitem相当于app.dependency_overrides[get_chat_service] = get_fake_chat_service
-    #在这次测试期间，告诉 FastAPI：原本凡是要执行 get_chat_service 的地方，都不要执行它，改成执行 get_fake_chat_service
+    #在这次测试期间，告诉 FastAPI：原本凡是要执行 get_chat_service 的地方，都不要执行它，改成执行 get_fake_chat_service。原因是我们的路由里写的仍然是：Depends(get_chat_service)所以我们需要告诉 FastAPI：遇到这个原来的依赖函数，请改用我的假依赖函数。
     '''
 真实的流程
 POST /chat
@@ -319,6 +321,44 @@ def test_chat_invalid_response(monkeypatch):
     assert response.status_code == 502
     assert response.json() == {
         "detail": "模型返回了不可用的响应，请稍后再试"
+    }
+
+
+def test_chat_connection_error(monkeypatch):
+    """Client 报告连接失败时，Router 应返回 503。"""
+    async def fake_generate_connection_error(messages):
+        raise LLMConnectionError("测试：连接失败")
+
+    with TestClient(app) as client:
+        monkeypatch.setattr(
+            app.state.chat_service.llm_client,
+            "generate",
+            fake_generate_connection_error,
+        )
+        response = client.post("/chat", json={"message": "你好"})
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": "暂时无法连接模型服务，请稍后再试"
+    }
+
+
+def test_chat_provider_error(monkeypatch):
+    """上游错误应返回 502，且不把内部错误说明直接暴露给用户。"""
+    async def fake_generate_provider_error(messages):
+        raise LLMProviderError("测试：上游认证失败，内部错误信息")
+
+    with TestClient(app) as client:
+        monkeypatch.setattr(
+            app.state.chat_service.llm_client,
+            "generate",
+            fake_generate_provider_error,
+        )
+        response = client.post("/chat", json={"message": "你好"})
+
+    assert response.status_code == 502
+    assert response.json() == {
+        "detail": "模型服务请求失败，请稍后再试"
     }
 
 

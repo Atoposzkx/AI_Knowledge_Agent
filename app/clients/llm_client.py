@@ -70,9 +70,12 @@ HTTP 转换
                 model=settings.llm_model,
                 input=messages,
             )
-            #Exception Chaining，异常链。from exc 是明确说明“新异常由原异常引起”
+            #Exception Chaining，异常链。from exc 是明确说明“新异常由原异常引起”，例如下面这个LLMTimeoutError就是由 APITimeoutError 引起的。
         except APITimeoutError as exc:
             # APITimeoutError 是 APIConnectionError 的子类，必须先捕获。
+            #原始异常：APITimeoutError
+            #                    ↓ 被 Client 捕获并转换
+            #                最终异常：LLMTimeoutError
             logger.warning("llm_timeout elapsed_ms=%.0f", (perf_counter() - started) * 1000)
             raise LLMTimeoutError("等待模型回答超时，请稍后重试") from exc
         except APIConnectionError as exc:

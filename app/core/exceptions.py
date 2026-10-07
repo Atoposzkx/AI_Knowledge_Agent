@@ -9,12 +9,10 @@ class LLMTimeoutError(Exception):
     - 继承 Exception 已有的异常能力。
     - 创建一个名字明确、可以单独捕获的新异常类型。
     """
-    pass
 
 
 class LLMResponseError(Exception):
     '''模型返回了不可用的响应，例如空答案'''
-    pass
 
 
 class LLMConnectionError(Exception):
