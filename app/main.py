@@ -42,6 +42,9 @@ import logging
 from app.clients.llm_client import LLMClient
 from app.services.chat_service import ChatService
 from app.core.logging import configure_logging
+from app.api.routes.v2 import router as v2_router
+from app.services.note_service import NoteAnalysisService
+from app.services.tool_chat_service import ToolChatService
 
 logger = logging.getLogger(__name__)
 
@@ -96,22 +99,28 @@ async def lifespan(app: FastAPI):
         #启动时创建服务，保存在当前应用上
         #app.state.chat_service	保存应用运行期间使用的 Service。get_chat_service()	取出 Service，供 Depends 注入
         app.state.chat_service = ChatService(llm_client=llm_client)
+        app.state.note_service = NoteAnalysisService(llm_client)
+        app.state.tool_service = ToolChatService(llm_client)
         logger.info("application_started")
         yield
     finally:
        #应用关闭时，清理本次启动创建客户端
         await llm_client.close()
         del app.state.chat_service
+        del app.state.note_service
+        del app.state.tool_service
         logger.info("application_stopped")
 
 
 app = FastAPI(
     title="AI Knowledge Agent",
-    version="0.1.0",
-    description="AI Knowledge Agent V1 API",
+    version="0.2.0",
+    description="AI Knowledge Agent V2 API",
     lifespan=lifespan,
 )
 
 # Router 在入口处统一注册。以后增加新的业务模块时，也在这里挂载。
 app.include_router(health_router)
 app.include_router(chat_router)
+
+app.include_router(v2_router)

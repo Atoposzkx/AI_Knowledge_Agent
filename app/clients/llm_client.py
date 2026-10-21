@@ -64,37 +64,56 @@ SDK 异常
 HTTP 转换
 → Web Layer 处理
         '''
+        response = await self.create_response(messages)
+        return self.text_answer(response)
+
+    async def create_response(self, messages: list[dict], **options):
+        """统一 SDK 异常转换；工具阶段也复用此边界，不在 Service 重试。"""
         started = perf_counter()
         try:
             response = await self.client.responses.create(
-                model=settings.llm_model,
-                input=messages,
+                model=settings.llm_model, input=messages, **options,
             )
-            #Exception Chaining，异常链。from exc 是明确说明“新异常由原异常引起”，例如下面这个LLMTimeoutError就是由 APITimeoutError 引起的。
         except APITimeoutError as exc:
-            # APITimeoutError 是 APIConnectionError 的子类，必须先捕获。
-            #原始异常：APITimeoutError
-            #                    ↓ 被 Client 捕获并转换
-            #                最终异常：LLMTimeoutError
-            logger.warning("llm_timeout elapsed_ms=%.0f", (perf_counter() - started) * 1000)
+            logger.warning("llm_timeout")
             raise LLMTimeoutError("等待模型回答超时，请稍后重试") from exc
         except APIConnectionError as exc:
-            logger.warning("llm_connection_error elapsed_ms=%.0f", (perf_counter() - started) * 1000)
+            logger.warning("llm_connection_error")
             raise LLMConnectionError("无法连接模型服务") from exc
         except APIStatusError as exc:
-            # 不输出 str(exc) 或异常原文，避免把上游响应和请求内容写进日志。
-            logger.warning("llm_provider_error status=%s elapsed_ms=%.0f", exc.status_code, (perf_counter() - started) * 1000)
+            logger.warning("llm_provider_error status=%s", exc.status_code)
             raise LLMProviderError("模型服务请求失败") from exc
+        if getattr(response, "status", None) not in (None, "completed"):
+            logger.warning("llm_incomplete_response")
+            raise LLMResponseError("模型响应未完成")
+        for item in getattr(response, "output", []):
+            if any(getattr(part, "type", None) == "refusal"
+                   for part in (getattr(item, "content", None) or [])):
+                logger.warning("llm_refusal")
+                raise LLMResponseError("模型拒绝了该请求")
+        logger.info("llm_success elapsed_ms=%.0f", (perf_counter() - started) * 1000)
+        return response
 
+    @staticmethod
+    def text_answer(response) -> str:
         # output 包含不同类型的输出项；output_text 快捷提取其中的文本。
         answer = response.output_text
         if not isinstance(answer, str) or not answer.strip():
             logger.warning("llm_empty_answer")
             raise LLMResponseError("模型没有返回文本答案")
 
-        logger.info("llm_success elapsed_ms=%.0f", (perf_counter() - started) * 1000)
         return answer.strip()
-        
+
+    async def generate_structured(self, messages: list[dict], schema: dict) -> str:
+        response = await self.create_response(
+            messages,
+            text={"format": {
+                "type": "json_schema", "name": "structured_result",
+                "schema": schema, "strict": True,
+            }},
+        )
+        return self.text_answer(response)
+
 '''
 OpenAI Python SDK 是一个客户端库，它帮我们构造 HTTP Request、发送请求、携带认证信息，并把 API 返回的数据解析成 Python 对象。以下是流程
 ① 读取参数

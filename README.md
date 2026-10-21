@@ -1,6 +1,6 @@
 # AI Knowledge Agent
 
-一个用于学习 FastAPI 分层开发的单轮聊天后端。V1 已实现请求校验、
+一个分层实现的 AI 学习助手后端。V2 新增结构化笔记分析和原生工具调用。V1 已实现请求校验、
 模型调用封装、异常转换、依赖注入、资源生命周期管理、日志和自动化测试。
 
 ```text
@@ -12,7 +12,8 @@ POST /chat
 → Router 返回 ChatResponse
 ```
 
-当前不包含知识库检索（RAG）、多轮记忆、流式响应、工具调用和用户认证。
+当前不包含知识库检索（RAG）、长期记忆、流式响应和用户认证。
+V2 显式历史仅随请求传入，不在服务端保存。
 
 ## 项目结构
 
@@ -187,3 +188,66 @@ uv run python -m pytest tests/test_llm_client.py -v
 4. 分别发送 `{}` 和 `{"message":"   "}`，确认 HTTP `422`。
 5. 按 `Ctrl+C` 关闭，确认出现 `application_stopped` 日志。
 6. 运行全部自动化测试，确认通过。
+
+
+## V2 接口
+
+继续使用上述安装、配置和启动方式，在 `/docs` 可查看所有请求模型。
+开发在 `v2` 分支，暂不合并 `main`。
+
+### POST /notes/analyze
+
+```json
+{"note_text":"Python 装饰器在不修改原函数代码的前提下，为函数添加日志记录等功能。"}
+```
+
+返回经过 Pydantic 校验的对象，例如：
+
+```json
+{"summary":"装饰器可为函数添加日志功能。","keywords":["装饰器","日志"],"difficulty":"easy"}
+```
+
+摘要 1～200 字符；关键词 1～5 项，每项非空且不重复；难度为 easy、medium、hard。
+笔记去除首尾空白后为 1～10,000 字符。格式校验不能保证内容真实。
+
+### POST /chat/tools
+
+```json
+{"message":"请调用工具查询 RAG 并解释它。","history":[]}
+```
+
+返回 `answer` 和 `tool_results`。每个工具结果包含 `call_id`、`name`、`ok` 及
+`result` 或 `error`；无需工具时 `tool_results` 为空。工具仅查询本地 AI 术语表，
+包含 RAG、Tool Calling、Structured Output，没有联网搜索或真正的知识库检索。
+
+history 可含最多 12 条 user/assistant 消息，每条非空且最多 10,000 字符；message
+也为 1～10,000 字符，历史与当前问题总计不超过 20,000 字符。应用字符上限不等于模型
+的 token 窗口。客户端须自行携带历史，不允许通过 history 注入 developer/system 角色。
+
+工具最多执行一批（最多四个），再请求最终回答；不运行自主 Agent 循环。
+未知工具、参数非法和工具执行异常作为结构化错误回传；批次异常、无效结构化输出、
+拒绝、未完成响应或上游错误映射 502，连接失败 503，超时 504，输入不合法 422。
+新功能和 V1 共享生命周期中的客户端。
+
+### 验证与限制
+
+```bash
+uv run python -m pytest -q
+```
+
+正式测试仅收集 `tests/`，不会运行你保留的 `test.py` 实验或真实验收脚本。
+真实提供商验收需显式开启，可能产生费用：
+
+```bash
+LLM_MAX_RETRIES=0 uv run python -m scripts.verify_v2 --live
+```
+
+本次交付仅执行离线测试，真实工具闭环尚待上述命令与人工核对。实际服务必须同时支持
+Responses、严格 JSON Schema 和 function calling；只兼容 Chat Completions 的服务
+不能直接运行这些接口。未修改用户 `.env`，也没有自动更换提供商或静默降级。
+SDK 重试由 LLM_MAX_RETRIES 控制，Service 不叠加重试；默认不重试。
+
+详细的上下文实验、格式与语义区别、失败案例、验收步骤及 Streaming 待办见
+[验证记录](docs/v2-validation.md)。协议依据
+[OpenAI Structured Outputs](https://developers.openai.com/api/docs/guides/structured-outputs) 和
+[Function Calling](https://developers.openai.com/api/docs/guides/function-calling)，第三方兼容性需独立验证。
